@@ -1,151 +1,166 @@
 #!/usr/bin/env python3
-"""news-image-20261125, morning edition.
+"""THE WORLD IN ONE PAGE — Wednesday 25 November 2026, FULL-DAY EDITION.
 
-Draws a newspaper front page summing up Wednesday 25 November 2026
-(morning edition, stories verified to 02:15 UTC) as a 1024x1024 PNG.
-Pure Python standard library: own 5x7 bitmap font, own canvas, own
-PNG encoder. No network, no files read, deterministic output.
-Writes entry.png next to this script, or to $MAKEFUN_OUTPUT_DIR, or
-to /output when that directory exists.
+A newspaper front page drawn entirely in code. Python standard library only:
+own 5x7 bitmap font, own PNG encoder, no photos, no network, deterministic
+(two runs produce byte-identical output).
+
+Run:  python3 main.py        -> writes entry.png (1024x1024)
 """
 
-import binascii
-import os
 import struct
-import sys
 import zlib
 
 W, H = 1024, 1024
 
-# ---------------------------------------------------------------- font
-# Each glyph: 7 rows of 5 cells, '#' = ink. Uppercase + digits + punct.
+# ---------------------------------------------------------------- palette ---
+PAPER = (247, 243, 234)
+INK = (26, 26, 26)
+RED = (178, 34, 34)
+BLUE = (28, 68, 128)
+GREY = (110, 108, 100)
+LIGHT = (232, 226, 212)
+MID = (200, 192, 172)
+GOLD = (176, 132, 30)
+GREEN = (34, 110, 60)
+
+# ------------------------------------------------------------- bitmap font --
+# 5x7 glyphs, '#' = ink, '.' = blank. Rendered in ALL CAPS; the normaliser
+# below folds accents and punctuation onto glyphs that exist.
 FONT = {
-    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
-    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
-    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
-    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
-    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
-    "G": (".####", "#....", "#....", "#.###", "#...#", "#...#", ".###."),
-    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
-    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
-    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
-    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
-    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
-    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
-    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
-    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
-    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
-    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
-    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
-    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
-    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
-    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
-    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
-    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
-    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
-    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
-    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
-    "3": (".###.", "#...#", "....#", "..##.", "....#", "#...#", ".###."),
-    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
-    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
-    "6": (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
-    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
-    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
-    "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
-    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
-    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
-    ",": (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."),
-    ":": (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
-    ";": (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."),
-    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
-    "?": (".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.."),
-    "%": ("#...#", "#..#.", "...#.", "..#..", ".#...", "#..#.", "#...#"),
-    "$": ("..#..", ".####", "#.#.#", ".###.", "..#.#", "####.", "..#.."),
-    "&": (".##..", "#..#.", "#..#.", ".#...", "#.#.#", "#..#.", ".##.#"),
-    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
-    "(": ("...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."),
-    ")": (".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."),
-    "+": (".....", "..#..", "..#..", ".###.", "..#..", "..#..", "....."),
-    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
-    "/": ("....#", "...#.", "...#.", "..#..", ".#...", ".#...", "#...."),
-    "*": (".....", ".#.#.", "..#..", "#####", "..#..", ".#.#.", "....."),
-    "=": (".....", ".....", "#####", ".....", "#####", ".....", "....."),
-    '"': (".#.#.", ".#.#.", ".....", ".....", ".....", ".....", "....."),
-    "<": ("...#.", "..#..", ".#...", "#....", ".#...", "..#..", "...#."),
-    ">": (".#...", "..#..", "...#.", "....#", "...#.", "..#..", ".#..."),
-    "_": (".....", ".....", ".....", ".....", ".....", ".....", "#####"),
+    'A': ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    'B': ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    'C': ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
+    'D': ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+    'E': ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    'F': ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    'G': ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
+    'H': ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    'I': ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
+    'J': ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
+    'K': ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    'L': ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    'M': ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    'N': ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    'O': ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    'P': ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    'Q': ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
+    'R': ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    'S': ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    'T': ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    'U': ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    'V': ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    'W': ("10001", "10001", "10001", "10101", "10101", "10101", "01010"),
+    'X': ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+    'Y': ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    'Z': ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    '0': ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    '1': ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    '2': ("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
+    '3': ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    '4': ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    '5': ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    '6': ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    '7': ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    '8': ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    '9': ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    ' ': ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
+    '.': ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
+    ',': ("00000", "00000", "00000", "00000", "01100", "00100", "01000"),
+    ':': ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
+    ';': ("00000", "01100", "01100", "00000", "01100", "00100", "01000"),
+    '!': ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
+    '?': ("01110", "10001", "00001", "00110", "00100", "00000", "00100"),
+    "'": ("00100", "00100", "01000", "00000", "00000", "00000", "00000"),
+    '"': ("01010", "01010", "01010", "00000", "00000", "00000", "00000"),
+    '-': ("00000", "00000", "00000", "01110", "00000", "00000", "00000"),
+    '%': ("11001", "11010", "00010", "00100", "01000", "01011", "10011"),
+    'L': ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),  # placeholder, replaced below
+    '$': ("00100", "01111", "10100", "01110", "00101", "11110", "00100"),
+    '&': ("01100", "10010", "10100", "01000", "10101", "10010", "01101"),
+    '(': ("00010", "00100", "01000", "01000", "01000", "00100", "00010"),
+    ')': ("01000", "00100", "00010", "00010", "00010", "00100", "01000"),
+    '/': ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
+    '+': ("00000", "00100", "00100", "11111", "00100", "00100", "00000"),
+    '=': ("00000", "00000", "11111", "00000", "11111", "00000", "00000"),
+    '*': ("00000", "10101", "01110", "11111", "01110", "10101", "00000"),
+    '~': ("00000", "00000", "01001", "10110", "00000", "00000", "00000"),
+    '<': ("00010", "00100", "01000", "10000", "01000", "00100", "00010"),
+    '>': ("01000", "00100", "00010", "00001", "00010", "00100", "01000"),
+    '_': ("00000", "00000", "00000", "00000", "00000", "00000", "11111"),
+    '#': ("01010", "01010", "11111", "01010", "11111", "01010", "01010"),
+}
+# Em dash, en dash, middle dot and pound sign get their own glyphs.
+FONT['—'] = ("00000", "00000", "00000", "11111", "00000", "00000", "00000")
+FONT['–'] = ("00000", "00000", "00000", "01110", "00000", "00000", "00000")
+FONT['·'] = ("00000", "00000", "00000", "00000", "01100", "01100", "00000")
+FONT['£'] = ("00110", "01001", "01000", "11110", "01000", "01001", "11111")
+
+FOLD = {
+    'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ã': 'A', 'Å': 'A',
+    'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+    'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+    'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Ö': 'O', 'Õ': 'O',
+    'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+    'Ý': 'Y', 'Ñ': 'N', 'Ç': 'C', 'Š': 'S', 'Ž': 'Z',
+    'á': 'A', 'à': 'A', 'ä': 'A', 'â': 'A', 'ã': 'A', 'å': 'A',
+    'é': 'E', 'è': 'E', 'ê': 'E', 'ë': 'E',
+    'í': 'I', 'ì': 'I', 'î': 'I', 'ï': 'I',
+    'ó': 'O', 'ò': 'O', 'ô': 'O', 'ö': 'O', 'õ': 'O',
+    'ú': 'U', 'ù': 'U', 'û': 'U', 'ü': 'U',
+    'ý': 'Y', 'ñ': 'N', 'ç': 'C', 'š': 'S', 'ž': 'Z',
+    '’': "'", '‘': "'", '“': '"', '”': '"', '«': '"', '»': '"',
+    '…': '.', '•': '·', '−': '-', '×': 'X',
 }
 
 
-def glyph(ch):
-    return FONT.get(ch, FONT["?"])
-
-
-def text_w(s, sc):
-    """Pixel width of string s at font scale sc."""
-    if not s:
-        return 0
-    return len(s) * 6 * sc - sc
-
-
-def wrap(s, maxw, sc):
-    """Greedy word wrap; returns list of lines, each <= maxw px."""
-    words = s.split(" ")
-    lines, cur = [], ""
-    for wd in words:
-        trial = wd if not cur else cur + " " + wd
-        if text_w(trial, sc) <= maxw or not cur:
-            cur = trial
+def norm(text):
+    out = []
+    for ch in text:
+        if ch in FOLD:
+            out.append(FOLD[ch])
+        elif ch in FONT:
+            out.append(ch)
+        elif ch.isalpha():
+            out.append(ch.upper())
         else:
-            lines.append(cur)
-            cur = wd
-    if cur:
-        lines.append(cur)
-    return lines
+            out.append(' ')
+    return ''.join(out)
 
 
-# ---------------------------------------------------------------- canvas
-PAPER = (247, 242, 226)
-INK = (25, 25, 25)
-RED = (178, 35, 27)
-GREY = (107, 107, 107)
-SEA = (222, 233, 236)
-LAND = (207, 224, 184)
-RULE = (25, 25, 25)
-
-
+# ---------------------------------------------------------------- canvas ----
 class Canvas:
     def __init__(self, w, h, bg):
         self.w, self.h = w, h
-        self.px = bytearray(bg * w * h)
+        self.px = bytearray(bg * (w * h))
 
-    def put(self, x, y, c):
+    def set(self, x, y, c):
         if 0 <= x < self.w and 0 <= y < self.h:
             i = (y * self.w + x) * 3
-            self.px[i], self.px[i + 1], self.px[i + 2] = c
+            self.px[i:i + 3] = bytes(c)
 
-    def rect(self, x, y, w, h, c):
-        for yy in range(max(0, y), min(self.h, y + h)):
-            base = (yy * self.w + max(0, x)) * 3
-            for xx in range(max(0, x), min(self.w, x + w)):
-                self.px[base], self.px[base + 1], self.px[base + 2] = c
-                base += 3
+    def rect(self, x, y, w, h, c, fill=True):
+        if fill:
+            for yy in range(y, y + h):
+                for xx in range(x, x + w):
+                    self.set(xx, yy, c)
+        else:
+            for xx in range(x, x + w):
+                self.set(xx, y, c)
+                self.set(xx, y + h - 1, c)
+            for yy in range(y, y + h):
+                self.set(x, yy, c)
+                self.set(x + w - 1, yy, c)
 
-    def hline(self, x0, x1, y, c, th=1):
-        self.rect(x0, y, x1 - x0, th, c)
+    def hline(self, x, y, w, c, t=1):
+        for yy in range(y, y + t):
+            for xx in range(x, x + w):
+                self.set(xx, yy, c)
 
-    def vline(self, x, y0, y1, c, th=1):
-        self.rect(x, y0, th, y1 - y0, c)
-
-    def frame(self, x, y, w, h, c, th=1):
-        self.hline(x, x + w, y, c, th)
-        self.hline(x, x + w, y + h - th, c, th)
-        self.vline(x, y, y + h, c, th)
-        self.vline(x + w - th, y, y + h, c, th)
+    def vline(self, x, y, h, c, t=1):
+        for xx in range(x, x + t):
+            for yy in range(y, y + h):
+                self.set(xx, yy, c)
 
     def line(self, x0, y0, x1, y1, c):
         dx, dy = abs(x1 - x0), abs(y1 - y0)
@@ -153,9 +168,9 @@ class Canvas:
         sy = 1 if y0 < y1 else -1
         err = dx - dy
         while True:
-            self.put(x0, y0, c)
+            self.set(x0, y0, c)
             if x0 == x1 and y0 == y1:
-                return
+                break
             e2 = 2 * err
             if e2 > -dy:
                 err -= dy
@@ -167,417 +182,449 @@ class Canvas:
     def circle(self, cx, cy, r, c, fill=True):
         for yy in range(cy - r, cy + r + 1):
             for xx in range(cx - r, cx + r + 1):
-                d = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy)
+                d = (xx - cx) ** 2 + (yy - cy) ** 2
                 if fill:
                     if d <= r * r:
-                        self.put(xx, yy, c)
+                        self.set(xx, yy, c)
                 else:
                     if r * r - 2 * r <= d <= r * r:
-                        self.put(xx, yy, c)
+                        self.set(xx, yy, c)
 
-    def poly(self, pts, c):
-        """Scanline fill of a simple polygon."""
-        pts = [(int(px), int(py)) for px, py in pts]
-        if len(pts) < 3:
+    def tri(self, pts, c):
+        (x0, y0), (x1, y1), (x2, y2) = pts
+        minx, maxx = min(x0, x1, x2), max(x0, x1, x2)
+        miny, maxy = min(y0, y1, y2), max(y0, y1, y2)
+        den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+        if den == 0:
             return
-        ys = [p[1] for p in pts]
-        for y in range(max(0, min(ys)), min(self.h, max(ys) + 1)):
-            xs = []
-            n = len(pts)
-            for i in range(n):
-                x0, y0 = pts[i]
-                x1, y1 = pts[(i + 1) % n]
-                if (y0 <= y < y1) or (y1 <= y < y0):
-                    xs.append(x0 + (y - y0) * (x1 - x0) / (y1 - y0))
-            xs.sort()
-            for j in range(0, len(xs) - 1, 2):
-                for x in range(int(xs[j]), int(xs[j + 1]) + 1):
-                    self.put(x, y, c)
-
-    def text(self, x, y, s, sc, c, align="l"):
-        s = s.upper()
-        if align == "c":
-            x -= text_w(s, sc) // 2
-        elif align == "r":
-            x -= text_w(s, sc)
-        cx = x
-        for ch in s:
-            g = glyph(ch)
-            for row in range(7):
-                bits = g[row]
-                for col in range(5):
-                    if bits[col] == "#":
-                        self.rect(cx + col * sc, y + row * sc, sc, sc, c)
-            cx += 6 * sc
-        return cx
-
-    def para(self, x, y, s, maxw, sc, c, lh=None):
-        """Wrapped paragraph; returns y after the last line."""
-        if lh is None:
-            lh = 7 * sc + 2
-        for ln in wrap(s, maxw, sc):
-            self.text(x, y, ln, sc, c)
-            y += lh
-        return y
+        for yy in range(miny, maxy + 1):
+            for xx in range(minx, maxx + 1):
+                a = ((y1 - y2) * (xx - x2) + (x2 - x1) * (yy - y2)) / den
+                b = ((y2 - y0) * (xx - x2) + (x0 - x2) * (yy - y2)) / den
+                cc = 1 - a - b
+                if a >= 0 and b >= 0 and cc >= 0:
+                    self.set(xx, yy, c)
 
 
-# ---------------------------------------------------------------- png
-def chunk(typ, data):
-    out = struct.pack(">I", len(data)) + typ + data
-    return out + struct.pack(">I", binascii.crc32(typ + data) & 0xFFFFFFFF)
+def text_w(s, scale):
+    return len(norm(s)) * 6 * scale
 
 
+def draw_text(cv, x, y, s, scale, color):
+    s = norm(s)
+    cx = x
+    for ch in s:
+        g = FONT.get(ch)
+        if g is None:
+            cx += 6 * scale
+            continue
+        for row in range(7):
+            bits = g[row]
+            for col in range(5):
+                if bits[col] == '1':
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            cv.set(cx + col * scale + dx, y + row * scale + dy, color)
+        cx += 6 * scale
+    return cx
+
+
+def draw_centered(cv, cx, y, s, scale, color):
+    draw_text(cv, cx - text_w(s, scale) // 2, y, s, scale, color)
+
+
+def wrap(s, scale, max_w):
+    """Greedy word wrap on the normalised text; returns list of lines."""
+    s = norm(s)
+    words = s.split(' ')
+    lines, cur = [], ''
+    for wd in words:
+        trial = (cur + ' ' + wd).strip()
+        if text_w(trial, scale) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = wd
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def draw_para(cv, x, y, s, scale, max_w, color, leading=None):
+    lh = leading if leading is not None else 9 * scale
+    for ln in wrap(s, scale, max_w):
+        draw_text(cv, x, y, ln, scale, color)
+        y += lh
+    return y
+
+
+# -------------------------------------------------------------- PNG write ---
 def write_png(cv, path):
     raw = bytearray()
-    for y in range(cv.h):
+    for yy in range(cv.h):
         raw.append(0)
-        raw += cv.px[y * cv.w * 3:(y + 1) * cv.w * 3]
-    ihdr = struct.pack(">IIBBBBB", cv.w, cv.h, 8, 2, 0, 0, 0)
-    data = b"\x89PNG\r\n\x1a\n"
-    data += chunk(b"IHDR", ihdr)
-    data += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-    data += chunk(b"IEND", b"")
-    with open(path, "wb") as f:
-        f.write(data)
-    return len(data)
+        raw.extend(cv.px[yy * cv.w * 3:(yy + 1) * cv.w * 3])
+    comp = zlib.compress(bytes(raw), 9)
+
+    def chunk(kind, data):
+        c = struct.pack('>I', len(data)) + kind + data
+        return c + struct.pack('>I', zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack('>IIBBBBB', cv.w, cv.h, 8, 2, 0, 0, 0)
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr)
+           + chunk(b'IDAT', comp) + chunk(b'IEND', b''))
+    with open(path, 'wb') as f:
+        f.write(png)
+    return len(png)
+
+# ----------------------------------------------------------- illustrations --
+def illo_ofgem(cv, x, y, w, h):
+    """House, lightning bolt, rising bill arrow."""
+    cv.rect(x, y, w, h, (255, 250, 235))
+    cv.rect(x, y, w, h, MID, fill=False)
+    # house
+    hx, hy = x + 28, y + 58
+    cv.line(hx, hy, hx + 52, hy - 34, INK)
+    cv.line(hx + 52, hy - 34, hx + 104, hy, INK)
+    cv.rect(hx + 8, hy, 88, 46, INK, fill=False)
+    cv.rect(hx + 38, hy + 22, 28, 24, INK, fill=False)
+    cv.rect(hx + 16, hy + 12, 18, 16, BLUE, fill=False)
+    cv.rect(hx + 70, hy + 12, 18, 16, BLUE, fill=False)
+    # lightning bolt
+    bx, by = x + w - 78, y + 18
+    cv.tri([(bx + 26, by), (bx + 2, by + 52), (bx + 20, by + 52)], GOLD)
+    cv.tri([(bx + 14, by + 40), (bx + 38, by + 92), (bx + 20, by + 92)], GOLD)
+    # rising arrow + bill
+    ax, ay = x + w - 150, y + h - 30
+    cv.line(ax, ay, ax + 46, ay - 52, RED)
+    cv.tri([(ax + 46, ay - 52), (ax + 34, ay - 44), (ax + 52, ay - 38)], RED)
+    draw_text(cv, x + 14, y + 8, "BILLS UP 26%", 2, RED)
 
 
-# ---------------------------------------------------------------- content
-# All facts from the morning-edition spec (verified to 02:15 UTC).
-# Text is upper-cased at draw time where needed; keep strings short so
-# they wrap to the planned number of lines at scale 2.
+def illo_tariffs(cv, x, y, w, h):
+    """Cargo ship stacked with crates, big % sign."""
+    cv.rect(x, y, w, h, (235, 242, 250))
+    cv.rect(x, y, w, h, MID, fill=False)
+    # sea
+    cv.hline(x + 8, y + h - 22, w - 16, BLUE, 2)
+    cv.hline(x + 30, y + h - 14, w - 60, BLUE, 2)
+    # hull
+    cv.tri([(x + 30, y + h - 34), (x + w - 30, y + h - 34),
+            (x + w - 58, y + h - 20)], RED)
+    cv.rect(x + 30, y + h - 48, w - 60, 14, RED)
+    # crates
+    cx0 = x + 52
+    for i, (cw, chh) in enumerate([(46, 30), (46, 30), (46, 30)]):
+        cv.rect(cx0 + i * 52, y + h - 48 - 34, cw, 30, GOLD, fill=False)
+        cv.line(cx0 + i * 52, y + h - 48 - 34, cx0 + i * 52 + 46,
+                y + h - 48 - 4, GOLD)
+        cv.line(cx0 + i * 52 + 46, y + h - 48 - 34, cx0 + i * 52,
+                y + h - 48 - 4, GOLD)
+    # funnel + % flag
+    cv.rect(x + w - 92, y + 16, 34, 34, INK)
+    draw_text(cv, x + w - 88, y + 22, "%", 2, PAPER)
+    draw_text(cv, x + 14, y + 8, "16 PARTNERS", 2, BLUE)
 
-LEADS = [
-    {
-        "kicker": "TARIFFS - UNITED STATES",
-        "head": "US SET TO UNVEIL NEW TARIFFS ON 16 PARTNERS",
-        "sub": "Section 301 probe. China, EU, India targeted.",
-        "facts": [
-            "Trump team poised to unveil probe findings.",
-            "Rates not settled. USTR to propose new duties.",
-            "Caps kept: 15% EU, Japan, S. Korea; 19% Malaysia.",
-        ],
-        "tag": "EXPECTED - NOT ANNOUNCED",
-        "src": "REUTERS - BLOOMBERG - FT - POLITICO - BBC",
-        "art": "bars",
-    },
-    {
-        "kicker": "BLAST - IOWA, USA",
-        "head": "ARMY TO DETONATE 5 TONS OF EXPLOSIVE",
-        "sub": "68 drums of degraded lead azide go up Wed. a.m.",
-        "facts": [
-            "Controlled blast at Iowa plant, 9 a.m. local.",
-            "Court refused a bid to halt it. Governor acted.",
-            "Plume maps: lead dust may drift to Missouri.",
-        ],
-        "tag": "SCHEDULED TODAY, NOT DONE",
-        "src": "AP - NYT - NBC - ARMY.MIL - WASHINGTON POST",
-        "art": "bunker",
-    },
-    {
-        "kicker": "WAR DEAD - RUSSIA",
-        "head": "LEAKED RECORDS PUT RUSSIAN WAR DEAD NEAR 500,000",
-        "sub": "Hacked Rosstat data. 490,334 registered dead.",
-        "facts": [
-            "Breach 1 Nov by Cyber Partisans, Silent Crow.",
-            "490,334 dead to Sep 2026. With missing, 720,000.",
-            "Rosstat denies breach. CNN cannot verify alone.",
-        ],
-        "tag": "LEAKED DATA - 5 NEWSROOMS",
-        "src": "BBC - MEDUZA - MEDIAZONA - THE INSIDER - CNN",
-        "art": "ledger",
-    },
-]
 
-# Secondaries: (headline, fact, source). Fact wraps to 2 lines.
-SECONDARIES = [
-    ("SYDNEY VERDICT",
-     "Ex-officer Lamarre-Condon guilty of murdering Jesse Baird and Luke Davies.",
-     "GUARDIAN - ABC - BBC"),
-    ("ABREGO GARCIA LEAVES US",
-     "Salvadoran at the centre of a US immigration fight has left for Spain.",
-     "WSJ - AP - NYT - BBC"),
-    ("EISENKOT FINDS PARTNER",
-     "Yashar signs a coalition pact with Lieberman's Yisrael Beiteinu in Israel.",
-     "AP - AL JAZEERA"),
-    ("SENEGAL CHAMPIONS AGAIN",
-     "CAS restores Senegal as AFCON winners. Morocco to fight on.",
-     "REUTERS - BBC - ESPN"),
-    ("HUAWEI: GUILTY, THEN NOT",
-     "Jury convicts on trade-secret conspiracy, acquits on racketeering.",
-     "AL JAZEERA - BBC"),
-    ("CARTAGENA SIEGE ENDS",
-     "About 25 hostages freed after gunmen seized an Exito supermarket.",
-     "STRAITS TIMES - FRANCE 24"),
-    ("ALASKA ENDS VOTER DEAL",
-     "State stops sharing voter rolls with the Trump Justice Department.",
-     "ABC - DEMOCRACY DOCKET"),
-    ("OFGEM CAP DUE TODAY",
-     "UK regulator sets January cap. Analysts see a 26% rise, bill GBP 2,166.",
-     "BBC - INDEPENDENT"),
-    ("ASIAN MARKETS OPEN LOWER",
-     "Nikkei -2.99% at 56,889; KOSPI -4.72% at 4,770. Mid-session, not closes.",
-     "YAHOO FINANCE"),
-    ("HOUTHIS THREATEN PORTS",
-     "Houthis say they will hit Jeddah and Saudi Red Sea ports if Hodeidah is hit.",
-     "ANI - AL JAZEERA - UNCONFIRMED"),
-]
+def illo_iowa(cv, x, y, w, h):
+    """Earth-covered bunker, warning plume drifting south-west."""
+    cv.rect(x, y, w, h, (240, 236, 222))
+    cv.rect(x, y, w, h, MID, fill=False)
+    # ground
+    cv.hline(x + 8, y + h - 26, w - 16, INK, 2)
+    # bunker mound (centred on the box bottom edge so nothing spills out)
+    bx, by = x + 30, y + h
+    for r, col in [(44, (120, 110, 90)), (34, (140, 130, 108)), (24, (160, 150, 126))]:
+        cv.circle(bx + 60, by, r, col)
+    cv.rect(bx, by - 4, 122, 4, INK)
+    # warning triangle
+    tx, ty = x + w - 96, y + 14
+    cv.tri([(tx + 30, ty), (tx, ty + 52), (tx + 60, ty + 52)], GOLD)
+    cv.tri([(tx + 30, ty + 8), (tx + 8, ty + 46), (tx + 52, ty + 46)], INK)
+    draw_text(cv, tx + 25, ty + 18, "!", 2, GOLD)
+    # plume dots drifting left-down
+    for i, (px, py, pr) in enumerate([(x + 150, y + 34, 7), (x + 128, y + 52, 9),
+                                      (x + 102, y + 70, 11), (x + 74, y + 88, 8)]):
+        cv.circle(px, py, pr, GREY)
+    draw_text(cv, x + 14, y + 8, "9 A.M. TODAY", 2, RED)
+
+
+# ------------------------------------------------------------------ data ----
+MASTHEAD = "THE WORLD IN ONE PAGE"
+SUBTITLE = ("WEDNESDAY 25 NOVEMBER 2026  ·  FULL-DAY EDITION  —  "
+            "VERIFIED TO 08:00 UTC")
+STRIP = "27 STORIES  ·  3 LEADS  ·  10 SECONDARIES  ·  14 IN BRIEF  ·  8 PINS"
 
 TIMELINE = [
-    ("TUE 18:48", "REUTERS: US SET TO UNVEIL NEW TARIFFS"),
-    ("TUE 22:34", "JURY RETIRES IN SYDNEY MURDER TRIAL"),
-    ("TUE 23:32", "ABREGO GARCIA DEPARTURE FIRST REPORTED"),
-    ("WED 00:27", "PLUME MAPS: DUST MAY REACH MO."),
-    ("WED 00:58", "LAMARRE-CONDON FOUND GUILTY IN SYDNEY"),
-    ("WED 02:07", "WAPO: DANGER SIGNS AT IOWA PLANT"),
+    ("TUE 24 NOV 18:48", "Reuters: US set to unveil new tariffs"),
+    ("TUE 24 NOV 23:32", "Abrego Garcia's departure for Spain first reported"),
+    ("WED 25 NOV 00:18", "Shenzhou-24 lifts off with Pakistan's first astronaut"),
+    ("WED 25 NOV 00:58", "Lamarre-Condon found guilty in Sydney"),
+    ("WED 25 NOV 03:56", "Shenzhou-24 docks at Tiangong space station"),
+    ("WED 25 NOV MORNING", "Ofgem raises UK price cap 26% to £2,166"),
 ]
 
-ALSO = [
-    "COLOMBIA: CAR BOMB WOUNDS 20+. EX-FARC BLAMED.",
-    "DR CONGO: MILITARY PLANE MISSING. REBELS CLAIM IT.",
-    "S. AFRICA: MAN HELD OVER RUSSIA FIGHT PLAN.",
-    "PUTIN: RETALIATION INEVITABLE AFTER OIL STRIKES.",
-    "IRAQ: PM ORDERS TROOPS TO TAKE KURDISH OILFIELDS.",
-    "AVIATION: CHINA SOUTHERN TO BUY 50 BOEING 737-8S.",
-    "NIGERIA: EMIR OF DAURA, 92, SUSPENDED OVER CLAIMS.",
-    "FRANCE: SARKOZY AND BRUNI TO FACE TRIAL IN NEW CASE.",
-    "TURKIYE: ARMY HELICOPTER CRASH KILLS FIVE.",
-    "IRAN: SINGER AND 3 MUSICIANS GET 74 LASHES.",
-    "BANGLADESH: HASINA SAYS SHE WILL RETURN 16 DEC.",
-    "NATO: CHIEF VOWS SPACE DEFENCE AFTER WARHEAD TALK.",
-    "SYRIA: LAND-MINE VICTIMS SOAR, 1,000 CHILDREN HIT.",
-    "ISRAEL: POLICE SEIZE MOSQUE SPEAKERS IN PRAYER ROW.",
+LEADS = [
+    dict(kicker="LEAD 1  ·  CONFIRMED TODAY  ·  LONDON",
+         illo=illo_ofgem,
+         head="UK ENERGY BILLS TO SOAR 26% FROM JANUARY",
+         sub=("Ofgem lifts price cap to £2,166 — up £443, highest since "
+              "spring 2023; 20m homes hit"),
+         facts=[
+             "Ofgem CONFIRMED on Wednesday it will raise the household "
+             "energy price cap by 26% to £2,166 a year for typical use from "
+             "January, up £443 from £1,723.",
+             "About 20m households on variable tariffs hit, driven by "
+             "soaring wholesale gas prices amid the Middle East conflict. "
+             "Highest cap since spring 2023.",
+             "Energy Secretary: most households will get £100 towards energy "
+             "costs from January to help this winter.",
+         ],
+         tag="CONFIRMED TODAY",
+         src="Sources: Reuters · The Times · Ofgem · BBC"),
+    dict(kicker="LEAD 2  ·  EXPECTED  ·  WASHINGTON",
+         illo=illo_tariffs,
+         head="US SET TO UNVEIL NEW TARIFFS ON 16 PARTNERS",
+         sub=("Section 301 probe into \"excess capacity\" — China, EU, India "
+              "among targets; rates not settled"),
+         facts=[
+             "The Trump administration is poised to unveil findings of a probe "
+             "into excess industrial capacity in 16 partners. Not announced "
+             "by 08:00 UTC.",
+             "Targets: China, EU, India, Japan, South Korea, Mexico, Vietnam, "
+             "Taiwan, Thailand, Malaysia, Indonesia, Switzerland, Norway, "
+             "Singapore, Bangladesh, Cambodia.",
+             "Rates NOT settled; USTR to propose duties stacking on existing "
+             "tariffs. Caps honoured: 15% EU/Japan/S. Korea, 19% Malaysia, "
+             "20% China. Rates 15-25% proposed.",
+         ],
+         tag="EXPECTED — NOT YET ANNOUNCED",
+         src="Sources: Reuters · Bloomberg · FT · Politico · BBC"),
+    dict(kicker="LEAD 3  ·  SCHEDULED TODAY  ·  IOWA",
+         illo=illo_iowa,
+         head="ARMY TO DETONATE 5 TONS OF UNSTABLE EXPLOSIVE IN IOWA",
+         sub=("Entire US stockpile of degraded lead azide — 68 drums — goes up "
+              "Wednesday morning; court refused to stop it"),
+         facts=[
+             "Detonation at the Iowa Army Ammunition Plant, Middletown, Wed "
+             "9 a.m. local (15:00 UTC), day before Thanksgiving, after a "
+             "court refused to halt it.",
+             "~5 tons / 68 drums of degraded lead azide, stored 20+ years; "
+             "Army says destroying it is the safest option; EPA safeguards "
+             "in place. Date moved 3 times.",
+             "Governor's emergency proclamation covers 3 counties; residents "
+             "in a 5-mile cone urged to relocate; plume may drift south-west "
+             "into Missouri.",
+         ],
+         tag="SCHEDULED TODAY — NOT YET DONE",
+         src="Sources: AP · NYT · NBC · Army.mil · Washington Post"),
 ]
 
-# Map pins: (number, label, lon, lat)
+SECONDARIES = [
+    ("LEAKED RECORDS PUT RUSSIAN WAR DEAD NEAR 500,000",
+     "Rosstat data breached 1 Nov, analysed by exiled outlets: 490,334 registered "
+     "dead by end Sep 2026; ~720,000 with the missing. Two figures — do not merge. "
+     "BBC · Meduza · Mediazona · The Insider · CNN"),
+    ("SHENZHOU-24 DOCKS WITH PAKISTAN'S FIRST ASTRONAUT ABOARD",
+     "Launched 00:18 GMT from Jiuquan, docked 03:56 GMT at Tiangong. Zeeshan Ali, "
+     "40, first Pakistani in orbit and first foreign visitor to China's station. "
+     "Reuters · Xinhua · Nature"),
+    ("CHINA PROBES SHANGHAI PARTY BOSS CHEN JINING",
+     "Politburo member under investigation for \"severe violations of discipline "
+     "and laws\"; fourth Politburo member to fall since 2025; Shanghai leaders "
+     "pledged loyalty on Wednesday. Xinhua · Reuters · CNN · WSJ"),
+    ("ZELENSKY CONFIRMS UKRAINE HIT RUSSIAN SHIP IN BALTIC",
+     "President says Ukraine struck the Sparta II in the Gulf of Finland on Sat "
+     "21 Nov, calling it a legitimate target; Norway urges caution. "
+     "Bloomberg · Reuters · Ukrinform"),
+    ("ASIAN MARKETS CLOSE SHARPLY LOWER",
+     "KOSPI -5.6% to 4,725.84, Nikkei -3.6% to 56,502.97, Taiex down over 6% as "
+     "TSMC sank 8.1%; AI doubts return. Hang Seng +1% to 22,449.86. AP"),
+    ("SYDNEY DOUBLE-MURDER VERDICT",
+     "Ex-police officer Beau Lamarre-Condon found guilty of murdering Jesse Baird "
+     "and Luke Davies; verdict 00:58 UTC. Guardian · ABC Australia · BBC"),
+    ("ABREGO GARCIA LEAVES US FOR SPAIN",
+     "Salvadoran whose removal case became a US immigration flashpoint has "
+     "departed for Spain. WSJ · AP · NYT · BBC"),
+    ("SENEGAL REINSTATED AS AFCON CHAMPIONS",
+     "CAS overturns CAF ruling; Morocco vows to fight on. Reuters · BBC · ESPN"),
+    ("HUAWEI GUILTY ON TRADE SECRETS, CLEARED OF RACKETEERING",
+     "New York jury convicts on conspiracy to steal trade secrets and fraud; "
+     "acquits on criminal racketeering. Al Jazeera · BBC"),
+    ("CARTAGENA SUPERMARKET SIEGE ENDS",
+     "About 25 hostages freed by police after armed men seized an Exito store "
+     "fleeing a botched robbery. Straits Times · France 24 · Guardian"),
+]
+
+ALSO_ON = [
+    "Riyadh — Houthi drone hits tallest tower, 11 wounded. (Reuters · WSJ)",
+    "Washington — Democrats reach 259 House seats, most since 1990. (AP)",
+    "Indonesia — ~26 miners trapped in flooded mine near Bogor. (Reuters)",
+    "Spain — voters go to polls Sunday; PP leads ahead of 29 Nov vote. (CFR)",
+    "Colombia — car bomb wounds 20+; president blames ex-FARC. (BBC)",
+    "DR Congo — military aircraft missing, rebels claim shoot-down. (BBC)",
+    "South Africa — man convicted of trying to join Russia's army. (BBC)",
+    "Russia — Putin vows retaliation for refinery strikes. (Al Jazeera)",
+    "Iraq — PM orders forces to take Kurdish oilfields. (Al Jazeera)",
+    "Aviation — China Southern unit buys 50 Boeing 737-8s. (Al Jazeera)",
+    "Nigeria — Emir of Daura, 92, suspended amid allegations. (BBC)",
+    "France — Sarkozy and Bruni to face trial. (BBC)",
+    "Turkiye — army helicopter crash kills five. (Al Jazeera)",
+    "Iran — singer Parastoo Ahmadi given 74 lashes. (BBC · Al Jazeera)",
+]
+
+# (label, x fraction, y fraction on the map, short note)
 PINS = [
-    (1, "WASHINGTON", -77, 39),
-    (2, "IOWA", -93, 42),
-    (3, "MOSCOW", 37, 56),
-    (4, "SYDNEY", 151, -34),
-    (5, "CARTAGENA", -75, 10),
-    (6, "DAKAR", -17, 15),
-    (7, "LONDON", 0, 51),
-    (8, "TOKYO/SEOUL", 133, 37),
+    ("1", 0.22, 0.34, "Washington — tariffs"),
+    ("2", 0.17, 0.44, "Iowa — blast"),
+    ("3", 0.47, 0.22, "London — price cap"),
+    ("4", 0.80, 0.30, "Jiuquan — Shenzhou"),
+    ("5", 0.86, 0.52, "Shanghai — probe"),
+    ("6", 0.93, 0.78, "Sydney — verdict"),
+    ("7", 0.60, 0.48, "Riyadh — tower strike"),
+    ("8", 0.92, 0.30, "Seoul/Tokyo — markets"),
 ]
 
-DATECHECK = [
-    "KOSPI +5.9% - 24 NOV",
-    "SINGAPORE GDP +6.1% - 24 NOV",
-    "NASDAQ -1.5%, NVIDIA -6% - 24 NOV",
-    "IFO 90.6 - 24 NOV",
-    "GAZA STRIKE - 24 NOV",
-    "HORMUZ TANKERS - 24 NOV",
-    "HUANG RETURNS AS NVIDIA CEO - 23 NOV",
-]
+DATE_CHECK = ("DATE CHECK — the stories below broke on other days and are NOT in "
+              "this edition:  KOSPI +5.9% — 24 Nov Asian close  ·  Singapore Q3 GDP "
+              "+6.1% — 24 Nov  ·  Nasdaq -1.5%, Nvidia -6% — 24 Nov US close  ·  "
+              "Ifo 90.6 — 24 Nov  ·  Gaza strike — 24 Nov  ·  Hormuz tanker attacks "
+              "— 24 Nov  ·  Jensen Huang returns as Nvidia CEO — 23 Nov  ·  Sparta II "
+              "strike — 21 Nov  ·  Spain snap vote — 29 Nov, called 5 Oct.")
+
+# ------------------------------------------------------------------ layout --
+M = 22
+CW = W - 2 * M  # 980
 
 
-# ---------------------------------------------------------------- layout
-MX = 16          # left margin (inside the frame)
-CW = 320         # lead column width
-COLX = [16, 348, 680]
+def ellipse(cv, cx, cy, rx, ry, c):
+    for yy in range(cy - ry, cy + ry + 1):
+        for xx in range(cx - rx, cx + rx + 1):
+            if ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1:
+                cv.set(xx, yy, c)
 
 
-def draw_bars(cv, x, y, w, h):
-    """16 partner bars, red for the three biggest, grey for the rest."""
-    cv.frame(x, y, w, h, INK)
-    heights = [16, 22, 13, 25, 19, 10, 21, 15, 27, 18, 12, 24, 9, 19, 13, 16]
-    bw = 12
-    for i, hh in enumerate(heights):
-        bx = x + 6 + i * 18
-        col = RED if i in (3, 8, 11) else GREY
-        cv.rect(bx, y + h - 4 - hh, bw, hh, col)
-    cv.hline(x, x + w, y + h - 4, INK)
-    cv.text(x + w - 52, y + 4, "16", 2, RED)
-
-
-def draw_bunker(cv, x, y, w, h):
-    """Earth-covered magazine, drums, warning triangle, plume arrow."""
-    cv.frame(x, y, w, h, INK)
-    cv.rect(x + 8, y + 22, 90, h - 26, (90, 70, 50))
-    cv.poly([(x + 8, y + 22), (x + 53, y + 4), (x + 98, y + 22)], (120, 95, 65))
-    for r in range(2):
-        for c in range(4):
-            cv.circle(x + 22 + c * 20, y + 30 + r * 9, 4, (40, 40, 40))
-    cx, cy = x + 186, y + 18
-    cv.poly([(cx, cy - 10), (cx + 12, cy + 10), (cx - 12, cy + 10)], RED)
-    cv.text(cx - 2, cy - 4, "!", 1, (255, 255, 255))
-    cv.text(x + 124, y + 26, "68 DRUMS", 1, INK)
-    cv.line(x + 210, y + 24, x + 300, y + 24, GREY)
-    cv.line(x + 300, y + 24, x + 292, y + 19, GREY)
-    cv.line(x + 300, y + 24, x + 292, y + 29, GREY)
-    cv.text(x + 210, y + 30, "PLUME TO MO.", 1, GREY)
-
-
-def draw_ledger(cv, x, y, w, h):
-    """Registry ledger rows with the two toll figures."""
-    cv.frame(x, y, w, h, INK)
-    for r in range(4):
-        yy = y + 6 + r * 9
-        cv.hline(x + 8, x + w - 8, yy, GREY)
-    cv.text(x + 10, y + 4, "490,334", 3, RED)
-    cv.text(x + 150, y + 12, "REGISTERED DEAD", 1, INK)
-    cv.text(x + 10, y + 26, "ABOUT 720,000 WITH MISSING", 1, GREY)
-
-
-ART = {"bars": draw_bars, "bunker": draw_bunker, "ledger": draw_ledger}
-
-
-def draw_lead(cv, lead, x, y0):
-    cv.text(x, y0 + 2, lead["kicker"], 2, RED)
-    y = y0 + 20
-    for ln in wrap(lead["head"], CW, 3):
-        cv.text(x, y, ln, 3, INK)
-        y += 22
-    y += 2
-    y = cv.para(x, y, lead["sub"], CW, 2, INK, lh=16)
-    y += 2
-    ART[lead["art"]](cv, x, y, CW, 32)
-    y += 36
-    for f in lead["facts"]:
-        y = cv.para(x, y, f, CW, 2, INK, lh=16)
-    y += 2
-    cv.text(x, y, lead["tag"], 2, RED)
-    y += 16
-    cv.text(x, y, lead["src"], 1, GREY)
-    return y + 11
-
-
-def draw_secondaries(cv, y0):
-    cols = [16, 520]
-    for i, (head, fact, src) in enumerate(SECONDARIES):
-        col = i % 2
-        row = i // 2
-        x = cols[col]
-        y = y0 + row * 58
-        cv.text(x, y, head, 2, INK)
-        y += 16
-        y = cv.para(x, y, fact, 488, 2, INK, lh=15)
-        cv.text(x, y + 3, src, 1, GREY)
-
-
-def draw_timeline(cv, y0):
-    cv.text(16, y0, "THE DAY IN UTC", 2, RED)
-    for i, (tm, txt) in enumerate(TIMELINE):
-        col = i % 3
-        row = i // 3
-        x = [16, 348, 680][col]
-        y = y0 + 18 + row * 31
-        lines = wrap(tm + " - " + txt, 320, 2)
-        yy = y
-        for ln in lines:
-            cv.text(x, yy, ln, 2, INK)
-            yy += 15
-
-
-# Coarse continent outlines in (lon, lat), equirectangular.
-NA = [(-168, 66), (-150, 70), (-130, 71), (-110, 72), (-95, 69), (-85, 66),
-      (-76, 60), (-65, 60), (-60, 47), (-70, 42), (-76, 35), (-81, 26),
-      (-84, 30), (-90, 21), (-97, 16), (-105, 20), (-114, 28), (-124, 40),
-      (-124, 48), (-135, 58), (-155, 58), (-165, 60)]
-SA = [(-79, 9), (-72, 4), (-60, -2), (-50, -5), (-40, -8), (-35, -18),
-      (-40, -28), (-48, -32), (-58, -38), (-65, -45), (-70, -52),
-      (-72, -42), (-74, -30), (-78, -18), (-81, -8), (-80, 2)]
-AF = [(-17, 33), (-10, 35), (-2, 35), (9, 37), (20, 32), (30, 31),
-      (36, 27), (43, 12), (48, 11), (42, 2), (40, -8), (36, -18),
-      (32, -28), (26, -33), (18, -35), (14, -28), (12, -18), (9, -4),
-      (9, 4), (-8, 5), (-14, 11)]
-EUAS = [(-9, 37), (-2, 43), (0, 46), (8, 44), (12, 44), (18, 40),
-        (23, 36), (28, 36), (30, 41), (36, 36), (42, 41), (48, 44),
-        (52, 46), (58, 50), (66, 54), (72, 58), (80, 62), (90, 68),
-        (100, 72), (110, 73), (125, 72), (140, 72), (155, 70), (170, 67),
-        (178, 65), (170, 60), (162, 56), (158, 50), (150, 45), (142, 42),
-        (135, 38), (127, 35), (122, 30), (118, 25), (110, 20), (108, 12),
-        (104, 8), (100, 7), (97, 10), (94, 16), (90, 22), (86, 20),
-        (80, 15), (77, 8), (74, 15), (70, 20), (66, 25), (60, 25),
-        (56, 27), (52, 28), (50, 30), (48, 38), (44, 41), (40, 44),
-        (36, 36), (30, 40), (26, 38), (22, 36), (18, 40), (12, 44),
-        (8, 38), (2, 37), (-6, 36)]
-AU = [(113, -22), (114, -30), (120, -34), (129, -32), (137, -35),
-      (142, -38), (150, -37), (153, -27), (146, -19), (142, -11),
-      (136, -12), (130, -13), (124, -14), (117, -20)]
-
-
-def draw_map(cv, x0, y0, w, h):
-    cv.frame(x0, y0, w, h, INK)
-    cv.rect(x0 + 1, y0 + 1, w - 2, h - 2, SEA)
-
-    def proj(lon, lat):
-        return (x0 + 4 + (lon + 170) / 360.0 * (w - 8),
-                y0 + 4 + (75 - lat) / 135.0 * (h - 28))
-
-    for cont in (NA, SA, AF, EUAS, AU):
-        cv.poly([proj(lo, la) for lo, la in cont], LAND)
-    for num, _name, lon, lat in PINS:
-        px, py = proj(lon, lat)
-        px, py = int(px), int(py)
+def draw_map(cv, x, y, w, h):
+    cv.rect(x, y, w, h, (228, 236, 242))
+    cv.rect(x, y, w, h, MID, fill=False)
+    # Stylised continents (light grey blobs on a pale sea).
+    land = (198, 192, 172)
+    ellipse(cv, x + int(w * 0.17), y + int(h * 0.32), 52, 24, land)   # N America
+    ellipse(cv, x + int(w * 0.27), y + int(h * 0.66), 22, 26, land)   # S America
+    ellipse(cv, x + int(w * 0.48), y + int(h * 0.26), 22, 14, land)   # Europe
+    ellipse(cv, x + int(w * 0.52), y + int(h * 0.58), 26, 26, land)   # Africa
+    ellipse(cv, x + int(w * 0.70), y + int(h * 0.32), 78, 26, land)   # Asia
+    ellipse(cv, x + int(w * 0.88), y + int(h * 0.74), 26, 12, land)   # Australia
+    # Pins.
+    for num, fx, fy, _note in PINS:
+        px, py = x + int(w * fx), y + int(h * fy)
         cv.circle(px, py, 8, RED)
         cv.circle(px, py, 8, INK, fill=False)
-        cv.text(px - 3, py - 3, str(num), 1, (255, 255, 255))
-    return y0 + h
+        draw_text(cv, px - 3, py - 3, num, 1, PAPER)
 
 
-def build():
-    cv = Canvas(W, H, PAPER)
-    cv.frame(8, 8, W - 16, H - 16, INK, 2)
-    cv.frame(12, 12, W - 24, H - 24, INK, 1)
-
-    # Masthead.
-    cv.text(W // 2, 20, "THE WORLD IN ONE DAY", 3, INK, align="c")
-    cv.text(W // 2, 44, "WEDNESDAY 25 NOVEMBER 2026", 5, RED, align="c")
-    cv.text(W // 2, 86, "MORNING EDITION - STORIES VERIFIED TO 02:15 UTC - ALL TIMES UTC",
-            2, GREY, align="c")
-    cv.text(W // 2, 104, "27 STORIES - 6 CONTINENTS - 3 LEADS - 10 SECONDARIES - 14 ALSO ON",
-            2, INK, align="c")
-    cv.hline(16, 1008, 120, INK, 2)
-
-    # Timeline.
-    draw_timeline(cv, 126)
-    cv.hline(16, 1008, 206, INK, 2)
-
-    # Three leads.
-    for lead, x in zip(LEADS, COLX):
-        draw_lead(cv, lead, x, 212)
-    cv.hline(16, 1008, 496, INK, 2)
-
-    # Secondaries, two columns x five rows.
-    draw_secondaries(cv, 502)
-    cv.hline(16, 1008, 794, INK, 2)
-
-    # Map + ALSO.
-    cv.text(16, 800, "WHERE IT HAPPENED", 2, RED)
-    draw_map(cv, 16, 816, 352, 156)
-    cv.text(20, 940, "1 WASHINGTON  2 IOWA  3 MOSCOW  4 SYDNEY", 1, INK)
-    cv.text(20, 950, "5 CARTAGENA  6 DAKAR  7 LONDON  8 TOKYO/SEOUL", 1, INK)
-    cv.text(392, 800, "ALSO ON THIS DAY", 2, RED)
-    for i, item in enumerate(ALSO):
-        col = i // 7
-        row = i % 7
-        x = 392 + col * 308
-        y = 818 + row * 22
-        lines = wrap("%d. %s" % (i + 1, item), 304, 1)
-        yy = y
-        for ln in lines[:2]:
-            cv.text(x, yy, ln, 1, INK)
-            yy += 10
-
-    # Date check footer.
-    cv.hline(16, 1008, 976, INK, 2)
-    cv.text(16, 980, "DATE CHECK - NOT TODAY, LEFT OUT ON PURPOSE (ALL 24 NOV, HUANG 23 NOV)",
-            2, RED)
-    cv.text(16, 998, "KOSPI +5.9% / SINGAPORE GDP +6.1% / NASDAQ -1.5% / IFO 90.6 / GAZA STRIKE / HORMUZ TANKERS / HUANG RETURNS AS NVIDIA CEO",
-            1, INK)
-    return cv
+def draw_lead(cv, x, y, w, lead):
+    draw_text(cv, x, y, lead["kicker"], 1, RED)
+    y += 12
+    lead["illo"](cv, x, y, w, 112)
+    y += 120
+    y = draw_para(cv, x, y, lead["head"], 2, w, INK, leading=17)
+    y += 4
+    y = draw_para(cv, x, y, lead["sub"], 1, w, BLUE, leading=9)
+    y += 6
+    for fact in lead["facts"]:
+        y = draw_para(cv, x, y, "·  " + fact, 1, w, INK, leading=9)
+        y += 4
+    y += 2
+    draw_text(cv, x, y, lead["tag"], 1, RED)
+    y += 11
+    draw_text(cv, x, y, lead["src"], 1, GREY)
+    return y + 9
 
 
 def main():
-    outdir = os.environ.get("MAKEFUN_OUTPUT_DIR")
-    if not outdir:
-        outdir = "/output" if os.path.isdir("/output") else "."
-    path = os.path.join(outdir, "entry.png")
-    cv = build()
-    n = write_png(cv, path)
-    print("wrote %s (%d bytes)" % (path, n))
+    cv = Canvas(W, H, PAPER)
+    # Outer frame.
+    cv.rect(10, 10, W - 20, H - 20, INK, fill=False)
+    cv.rect(13, 13, W - 26, H - 26, MID, fill=False)
+
+    # Masthead.
+    draw_centered(cv, W // 2, 20, MASTHEAD, 7, INK)
+    draw_centered(cv, W // 2, 74, SUBTITLE, 2, INK)
+    cv.hline(M, 96, CW, INK, 3)
+    cv.hline(M, 101, CW, INK, 1)
+    draw_centered(cv, W // 2, 110, STRIP, 2, RED)
+
+    # Timeline strip.
+    ty = 132
+    cv.rect(M, ty, CW, 78, LIGHT)
+    cv.rect(M, ty, CW, 78, MID, fill=False)
+    draw_text(cv, M + 10, ty + 6, "THE DAY IN UTC", 2, INK)
+    col_w = (CW - 20) // 2
+    for i, (tm, ev) in enumerate(TIMELINE):
+        col = i % 2
+        row = i // 2
+        ex = M + 10 + col * col_w
+        ey = ty + 26 + row * 16
+        draw_text(cv, ex, ey, tm, 1, RED)
+        draw_text(cv, ex + text_w(tm + "  ", 1), ey, ev, 1, INK)
+
+    # Leads.
+    ly = 222
+    cv.hline(M, 216, CW, INK, 2)
+    colw = 316
+    for i, lead in enumerate(LEADS):
+        lx = M + i * (colw + 16)
+        draw_lead(cv, lx, ly, colw, lead)
+        if i < 2:
+            cv.vline(lx + colw + 8, ly, 330, MID, 1)
+
+    # Secondaries.
+    sy = 566
+    cv.hline(M, sy - 6, CW, INK, 2)
+    draw_text(cv, M, sy, "MORE OF THE DAY", 2, INK)
+    draw_text(cv, M + text_w("MORE OF THE DAY  ", 2), sy + 2,
+              "TEN MORE STORIES FROM WEDNESDAY", 1, GREY)
+    iy = sy + 22
+    scolw = 480
+    for i, (head, fact) in enumerate(SECONDARIES):
+        col = i % 2
+        row = i // 2
+        sx = M + col * (scolw + 20)
+        yy = iy + row * 42
+        draw_text(cv, sx, yy, "%d." % (i + 1), 1, RED)
+        draw_para(cv, sx + 18, yy, head, 1, scolw - 18, INK, leading=9)
+        draw_para(cv, sx + 18, yy + 10, fact, 1, scolw - 18, GREY, leading=9)
+
+    # Map + Also on.
+    by = 806
+    cv.hline(M, by - 6, CW, INK, 2)
+    draw_text(cv, M, by, "WHERE IT HAPPENED", 2, INK)
+    draw_text(cv, M + 500, by, "ALSO ON", 2, INK)
+    draw_map(cv, M, by + 20, 470, 96)
+    ly2 = by + 122
+    for i, (_n, _fx, _fy, note) in enumerate(PINS):
+        col = i % 2
+        row = i // 2
+        lx = M + col * 240
+        lyy = ly2 + row * 9
+        draw_text(cv, lx, lyy, note, 1, INK)
+    # Also-on list, two columns of seven.
+    for i, item in enumerate(ALSO_ON):
+        col = i % 2
+        row = i // 2
+        ax = M + 500 + col * 250
+        ay = by + 20 + row * 18
+        draw_text(cv, ax, ay, "%d." % (i + 1), 1, RED)
+        draw_para(cv, ax + 16, ay, item, 1, 234 - 16, INK, leading=9)
+
+    # Date-check footer.
+    fy = 972
+    cv.hline(M, fy - 6, CW, INK, 2)
+    draw_para(cv, M, fy, DATE_CHECK, 1, CW, RED, leading=10)
+
+    n = write_png(cv, "entry.png")
+    print("wrote entry.png (%d bytes)" % n)
 
 
 if __name__ == "__main__":
